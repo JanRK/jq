@@ -32,7 +32,8 @@ docker run --rm -v $(pwd):/data ghcr.io/janrk/jq '.' /data/input.json
 ## Tags
 
 - `latest` - Latest build from main branch
-- `docker.io/alpine:3.23.0` - Based on Alpine version
+- `$alpine_version` - Based on Alpine version
+- `alpine-$alpine_version` - Based on Alpine version
 - `YYYYMMDD-RUN_NUMBER` - Date-based builds
 
 ## License
