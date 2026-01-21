@@ -1,0 +1,102 @@
+name: Docker
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set variables
+        id: vars
+        run: |
+          IMAGE_NAME_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=$IMAGE_NAME_LOWER" >> $GITHUB_OUTPUT
+          echo "date=$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+          FROM_TAG=$(grep -m1 '^FROM' Dockerfile | awk '{print $2}')
+          # Extract just the image name and version, remove registry prefix
+          FROM_TAG_CLEAN=$(echo "$FROM_TAG" | sed 's|.*/||' | tr ':' '-')
+          echo "from_tag=$FROM_TAG_CLEAN" >> $GITHUB_OUTPUT
+          # Extract just the version number
+          VERSION=$(echo "$FROM_TAG" | sed 's|.*:||')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 #v3.5.0
+        with:
+          cosign-release: 'v2.2.4'
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Docker image
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          platforms: linux/amd64
+          context: .
+          load: true
+          push: false
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test Docker image
+        run: |
+          echo "Testing Alpine image works normally..."
+          docker run --rm ${{ env.REGISTRY }}/${{ steps.vars.outputs.image }}:latest sh -c 'echo "Hello from Alpine"'
+          echo "Testing jq is installed and works..."
+          docker run --rm ${{ env.REGISTRY }}/${{ steps.vars.outputs.image }}:latest jq --version
+          echo "Testing jq can process JSON..."
+          docker run --rm ${{ env.REGISTRY }}/${{ steps.vars.outputs.image }}:latest sh -c 'echo "{\"test\":\"value\"}" | jq .test'
+
+      - name: Push Docker image
+        id: build-and-push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          platforms: linux/amd64,linux/arm64
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.from_tag }}
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.date }}-${{ github.run_number }}
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Sign the published Docker image
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        run: |
+          cosign sign --yes ${{ env.REGISTRY }}/${{ steps.vars.outputs.image }}@${DIGEST}
